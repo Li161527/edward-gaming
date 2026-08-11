@@ -1,19 +1,3 @@
-"""
-Aim Trainer — Many moving targets (3-5 simultaneous spawns, constant step size)
-
-Behavior changes per your request:
-- Each spawn tick now spawns 3-5 targets simultaneously (subject to capacity and available candidate positions).
-- Movement step no longer accelerates: each target moves by the same step_vector each MOVE_INTERVAL (restored).
-- Targets are removed immediately when destroyed (no corpses).
-- Targets are still not spawned from the candidate position closest to the front end.
-
-Other gameplay:
-- Targets advance every MOVE_INTERVAL (0.2s).
-- If any target reaches REACH_DISTANCE to the front base before GAME_LENGTH_SECS -> LOSS.
-- If the timer ends and no alive targets remain -> WIN, otherwise -> LOSS.
-
-Save as a .py file and run with pygame installed.
-"""
 import pygame
 import random
 import math
@@ -108,17 +92,8 @@ def make_tone(freq=440.0, duration=0.12, volume=0.5, sample_rate=44100):
 
 
 # SFX
-"""HIT_SOUND = make_tone(900.0, 0.06, 0.6)
-DESTROY_SOUND = make_tone(420.0, 0.18, 0.8)
-MISS_SOUND = make_tone(160.0, 0.06, 0.4)
-
-PISTOL_FIRE_SFX = make_tone(1400.0, 0.06, 0.9)
-RIFLE_FIRE_SFX = make_tone(900.0, 0.04, 0.95)
-EMPTY_CLICK = make_tone(240.0, 0.08, 0.25)
-RELOAD_SFX = make_tone(320.0, 0.28, 0.7)
-SHELL_EJECT_SFX = make_tone(800.0, 0.04, 0.25)"""
-
 SAMPLE_RATE_GUN = 44100
+
 
 def make_deep_boom_shot(duration=0.20, volume=0.70):
     """M14风格大口径低沉枪声，主频100Hz以内"""
@@ -130,7 +105,7 @@ def make_deep_boom_shot(duration=0.20, volume=0.70):
         if t < 0.005:
             attack_env = t / 0.005
         else:
-            attack_env = math.exp( -(t - 0.005) * 11 )
+            attack_env = math.exp(-(t - 0.005) * 11)
 
         boom_low = math.sin(2 * math.pi * 55 * t)
         boom_low_env = math.exp(-t * 7.5)
@@ -185,17 +160,7 @@ def make_delta_hit(duration=0.09, volume=0.65):
     return pygame.mixer.Sound(buf)
 
 
-# ========== 最终音效定义（直接覆盖你原来整段）==========
-"""HIT_SOUND = make_delta_hit(duration=0.09, volume=0.65)
-DESTROY_SOUND = make_tone(420.0, 0.18, 0.8)
-MISS_SOUND = make_tone(160.0, 0.06, 0.4)
-
-PISTOL_FIRE_SFX = make_deep_boom_shot(duration=0.12, volume=0.62)
-RIFLE_FIRE_SFX = make_deep_boom_shot(duration=0.20, volume=0.70)
-EMPTY_CLICK = make_tone(240.0, 0.08, 0.25)
-RELOAD_SFX = make_tone(320.0, 0.28, 0.7)
-SHELL_EJECT_SFX = make_tone(800.0, 0.04, 0.25)"""
-
+# Final SFX
 HIT_SOUND = make_delta_hit(duration=0.11, volume=0.68)
 DESTROY_SOUND = make_tone(420.0, 0.18, 0.8)
 MISS_SOUND = make_tone(160.0, 0.06, 0.4)
@@ -205,9 +170,6 @@ RIFLE_FIRE_SFX = make_deep_boom_shot(duration=0.20, volume=0.70)
 EMPTY_CLICK = make_tone(240.0, 0.08, 0.25)
 RELOAD_SFX = make_tone(320.0, 0.28, 0.7)
 SHELL_EJECT_SFX = make_tone(800.0, 0.04, 0.25)
-
-
-
 
 
 # --- collision helpers ---
@@ -221,6 +183,10 @@ def point_in_cone(px, py, cx, base_y, base_w, height):
     frac = (py - base_y) / height
     half_width_at_y = (1.0 - frac) * (base_w / 2.0)
     return abs(px - cx) <= half_width_at_y
+
+
+def point_in_rect(px, py, rx, ry, rw, rh):
+    return (px >= rx) and (px <= rx + rw) and (py >= ry) and (py <= ry + rh)
 
 
 # --- Target classes (Backend) ---
@@ -257,6 +223,7 @@ class PersonTarget:
         self.steps_remaining = int(steps_remaining)
         self.update_geometry()
         self.alive = True
+        self._torso_rect = None
 
     def update_geometry(self):
         cx, cy = self.center
@@ -277,6 +244,7 @@ class PersonTarget:
         self.steps_remaining = int(steps_remaining)
         self.update_geometry()
         self.alive = True
+        self._torso_rect = None
 
     def advance_step(self):
         if not self.alive:
@@ -550,12 +518,14 @@ class PistolModel(GunModel):
         self.slide_back = 0.0
         self.slide_vel = 0.0
         self.slide_speed = 8.0
-        self.width = 480
-        self.height = 120
+        # Made the pistol visually a bit bigger to emphasize the change
+        self.width = 640
+        self.height = 160
         self.muzzle_local = (0.82, 0.28)
 
     def on_fire(self, muzzle_world, muzzle_angle_deg):
-        self.recoil += 8.0
+        # Slightly increased recoil for snappier feel after modification
+        self.recoil += 10.0
         self.rot_recoil += random.uniform(1.8, 4.2)
         self.slide_vel = 1.0
         self.spawn_shell(muzzle_world, muzzle_angle_deg - 90)
@@ -613,12 +583,14 @@ class RifleModel(GunModel):
         self.bolt = 0.0
         self.bolt_vel = 0.0
         self.sway_phase = 0.0
-        self.width = 820
-        self.height = 160
+        # Slightly larger rifle model for emphasis
+        self.width = 980
+        self.height = 200
         self.muzzle_local = (0.92, 0.30)
 
     def on_fire(self, muzzle_world, muzzle_angle_deg):
-        self.recoil += 4.0
+        # Increased recoil a bit for the modified feel
+        self.recoil += 6.0
         self.rot_recoil += random.uniform(2.2, 5.0)
         self.bolt_vel = 1.2 + random.uniform(0.0, 0.4)
         self.spawn_shell(muzzle_world, muzzle_angle_deg - 100)
@@ -749,12 +721,12 @@ class Frontend:
         self.shots = 0
         self.start_time = pygame.time.get_ticks()
         self.duration_ms = GAME_LENGTH_SECS * 1000
-        # weapons
+        # weapons (mag & reserve sizes doubled)
         self.pistol_model = PistolModel()
         self.rifle_model = RifleModel()
         self.weapons = [
-            Weapon("Pistol", mag_size=12, reserve=48, fire_rate=5.0, automatic=False, reload_time=1.3, model=self.pistol_model),
-            Weapon("Rifle", mag_size=30, reserve=120, fire_rate=12.0, automatic=True, reload_time=2.4, model=self.rifle_model),
+            Weapon("Pistol", mag_size=24, reserve=96, fire_rate=5.0, automatic=False, reload_time=1.3, model=self.pistol_model),
+            Weapon("Rifle", mag_size=60, reserve=240, fire_rate=12.0, automatic=True, reload_time=2.4, model=self.rifle_model),
         ]
         self.current_weapon_idx = 0
         self.crosshair_pos = (WINDOW_SIZE[0] // 2, WINDOW_SIZE[1] // 2)
@@ -828,6 +800,7 @@ class Frontend:
             for t in alive_targets:
                 sx, sy = t.sphere_center
                 scaled_radius = max(4, int(SPHERE_RADIUS * t.scale))
+                # headshot check (same as before)
                 if point_in_sphere(mx, my, sx, sy, scaled_radius):
                     self.hits += 1
                     t.destroy_by_head()
@@ -838,8 +811,19 @@ class Frontend:
                         pass
                     hit_any = True
                     break
-                cx = t.screen_center[0]
-                if point_in_cone(mx, my, cx, t.cone_top_y, t.cone_base_w, t.cone_height):
+
+                # torso rectangle collision (replaces cone)
+                cx = int(t.screen_center[0])
+                torso = getattr(t, "_torso_rect", None)
+                if torso is None:
+                    torso_w = int(t.cone_base_w * 0.6)
+                    torso_h = int(t.cone_height * 0.5)
+                    torso_x = int(cx - torso_w // 2)
+                    torso_y = int(t.cone_top_y + t.cone_height * 0.15)
+                else:
+                    torso_x, torso_y, torso_w, torso_h = torso
+
+                if point_in_rect(mx, my, torso_x, torso_y, torso_w, torso_h):
                     self.hits += 1
                     t.damage_body(1)
                     try:
@@ -854,6 +838,7 @@ class Frontend:
                             pass
                     hit_any = True
                     break
+
             if not hit_any:
                 try:
                     MISS_SOUND.play()
@@ -921,57 +906,105 @@ class Frontend:
         base_w = int(t.cone_base_w)
         height = int(t.cone_height)
         depth_tint = int(lerp(0, 60, t.depth))
-        if not t.alive:
-            body_col = (110, 110, 110)
-        else:
-            base_col = BODY_COLOR if t.body.hits_remaining == CONE_MAX_HITS else HIT_BODY_COLOR
-            body_col = (max(0, base_col[0] - depth_tint), max(0, base_col[1] - depth_tint),
-                        max(0, base_col[2] - depth_tint))
 
-        left_base = (cx - base_w // 2, base_y)
-        right_base = (cx + base_w // 2, base_y)
-        apex = (cx, base_y + height)
-        pygame.draw.polygon(surface, (max(0, body_col[0] - 18), max(0, body_col[1] - 18), max(0, body_col[2] - 18)),
-                            [left_base, right_base, apex])
-        pygame.draw.polygon(surface, body_col, [left_base, right_base, apex])
-        fold_color = (min(255, body_col[0] + 20), min(255, body_col[1] + 20), min(255, body_col[2] + 20))
-        pygame.draw.polygon(surface, fold_color,
-                            [(cx, base_y + int(height * 0.12)), (cx - base_w // 8, base_y + height // 2),
-                             (cx + base_w // 8, base_y + height // 2)])
-        arm_y = int(t.arm_y)
-        arm_len = int(base_w / 1.6)
-        left_arm_start = (cx - base_w // 2 + 6, arm_y)
-        left_arm_end = (cx - base_w // 2 - int(arm_len * 0.2), arm_y + 36)
-        right_arm_start = (cx + base_w // 2 - 6, arm_y)
-        right_arm_end = (cx + base_w // 2 + int(arm_len * 0.2), arm_y + 36)
-        pygame.draw.line(surface, ARM_COLOR, left_arm_start, left_arm_end, max(3, int(8 * t.scale)))
-        pygame.draw.line(surface, ARM_COLOR, right_arm_start, right_arm_end, max(3, int(8 * t.scale)))
-        leg_w = max(6, base_w // 8)
-        leg_h = max(10, int(26 * t.scale))
-        leg_x_left = cx - base_w // 6 - leg_w // 2
-        leg_x_right = cx + base_w // 6 - leg_w // 2
-        leg_y = apex[1] + 8
-        pygame.draw.rect(surface, LEG_COLOR, (leg_x_left, leg_y, leg_w, leg_h), border_radius=6)
-        pygame.draw.rect(surface, LEG_COLOR, (leg_x_right, leg_y, leg_w, leg_h), border_radius=6)
+        # Colors (adjusted by depth)
+        if not t.alive:
+            skin_col = (120, 110, 100)
+            cloth_col = (90, 90, 90)
+        else:
+            skin_base = (250, 210, 150)
+            cloth_base = BODY_COLOR if t.body.hits_remaining == CONE_MAX_HITS else HIT_BODY_COLOR
+            skin_col = (max(0, skin_base[0] - depth_tint), max(0, skin_base[1] - depth_tint), max(0, skin_base[2] - depth_tint))
+            cloth_col = (max(0, cloth_base[0] - depth_tint), max(0, cloth_base[1] - depth_tint), max(0, cloth_base[2] - depth_tint))
+
+        # Head
         sx, sy = int(t.sphere_center[0]), int(t.sphere_center[1])
         scaled_head_radius = max(6, int(SPHERE_RADIUS * t.scale))
         if t.alive:
-            pygame.draw.circle(surface, (255, 245, 225), (sx, sy), scaled_head_radius + max(3, int(6 * t.scale)))
-            pygame.draw.circle(surface, HEAD_COLOR, (sx, sy), scaled_head_radius)
+            # rim + face
+            pygame.draw.circle(surface, (20, 20, 20), (sx, sy), scaled_head_radius + max(3, int(6 * t.scale)))
+            pygame.draw.circle(surface, skin_col, (sx, sy), scaled_head_radius)
+            # hair (simple cap)
+            hair_h = int(scaled_head_radius * 0.6)
+            pygame.draw.ellipse(surface, (40, 30, 20), (sx - scaled_head_radius, sy - scaled_head_radius, scaled_head_radius * 2, hair_h))
+            # eyes
             eye_offset_x = max(6, scaled_head_radius // 3)
-            eye_offset_y = -6
-            pygame.draw.circle(surface, EYE_COLOR, (sx - eye_offset_x, sy + eye_offset_y), max(2, int(6 * t.scale)))
-            pygame.draw.circle(surface, EYE_COLOR, (sx + eye_offset_x, sy + eye_offset_y), max(2, int(6 * t.scale)))
-            smile_rect = pygame.Rect(sx - max(8, int(14 * t.scale)), sy + max(2, int(4 * t.scale)),
-                                     max(16, int(28 * t.scale)), max(8, int(16 * t.scale)))
-            pygame.draw.arc(surface, EYE_COLOR, smile_rect, math.radians(18), math.radians(162), max(1, int(2 * t.scale)))
+            eye_offset_y = -max(4, int(6 * t.scale))
+            eye_r = max(1, int(3 * t.scale))
+            pygame.draw.circle(surface, EYE_COLOR, (sx - eye_offset_x, sy + eye_offset_y), eye_r)
+            pygame.draw.circle(surface, EYE_COLOR, (sx + eye_offset_x, sy + eye_offset_y), eye_r)
+            # nose (small triangle)
+            nose = [(sx, sy - 2), (sx - 4, sy + 4), (sx + 4, sy + 4)]
+            pygame.draw.polygon(surface, (200, 160, 120), nose)
+            # mouth
+            mouth_rect = pygame.Rect(sx - int(8 * t.scale), sy + int(8 * t.scale), int(16 * t.scale), max(6, int(8 * t.scale)))
+            pygame.draw.arc(surface, (100, 60, 60), mouth_rect, math.radians(20), math.radians(160), max(1, int(2 * t.scale)))
         else:
             pygame.draw.circle(surface, (130, 130, 130), (sx, sy), scaled_head_radius, 2)
 
+        # Torso (rectangle + shoulder/neck)
+        torso_w = int(base_w * 0.6)
+        torso_h = int(height * 0.5)
+        torso_x = cx - torso_w // 2
+        torso_y = int(base_y + height * 0.15)
+        pygame.draw.rect(surface, cloth_col, (torso_x, torso_y, torso_w, torso_h), border_radius=max(4, int(6 * t.scale)))
+
+        # Collar / neck
+        neck_w = max(6, int(torso_w * 0.18))
+        neck_h = max(6, int(8 * t.scale))
+        pygame.draw.rect(surface, skin_col, (cx - neck_w // 2, torso_y - neck_h, neck_w, neck_h), border_radius=3)
+
+        # Shoulders shading
+        shoulder_col = tuple(max(0, min(255, c + 12)) for c in cloth_col)
+        pygame.draw.ellipse(surface, shoulder_col, (torso_x - int(torso_w * 0.1), torso_y - int(torso_h * 0.08), int(torso_w * 1.2), int(torso_h * 0.35)))
+
+        # Arms with joints (upper arm + forearm)
+        arm_thickness = max(5, int(12 * t.scale))
+        upper_len = int(torso_h * 0.6)
+        lower_len = int(torso_h * 0.55)
+        # left arm
+        left_sh_x = torso_x
+        left_sh_y = torso_y + int(torso_h * 0.2)
+        elbow_lx = left_sh_x - int(upper_len * 0.6)
+        elbow_ly = left_sh_y + int(upper_len * 0.45)
+        hand_lx = elbow_lx - int(lower_len * 0.55)
+        hand_ly = elbow_ly + int(lower_len * 0.2)
+        pygame.draw.line(surface, cloth_col, (left_sh_x, left_sh_y), (elbow_lx, elbow_ly), arm_thickness)
+        pygame.draw.line(surface, skin_col, (elbow_lx, elbow_ly), (hand_lx, hand_ly), arm_thickness - 2)
+        pygame.draw.circle(surface, skin_col, (hand_lx, hand_ly), max(4, int(6 * t.scale)))
+
+        # right arm
+        right_sh_x = torso_x + torso_w
+        right_sh_y = left_sh_y
+        elbow_rx = right_sh_x + int(upper_len * 0.6)
+        elbow_ry = right_sh_y + int(upper_len * 0.45)
+        hand_rx = elbow_rx + int(lower_len * 0.55)
+        hand_ry = elbow_ry + int(lower_len * 0.2)
+        pygame.draw.line(surface, cloth_col, (right_sh_x, right_sh_y), (elbow_rx, elbow_ry), arm_thickness)
+        pygame.draw.line(surface, skin_col, (elbow_rx, elbow_ry), (hand_rx, hand_ry), arm_thickness - 2)
+        pygame.draw.circle(surface, skin_col, (hand_rx, hand_ry), max(4, int(6 * t.scale)))
+
+        # Legs (thigh + shin + shoe)
+        thigh_w = max(8, int(torso_w * 0.22))
+        thigh_h = int(height * 0.28)
+        shin_h = int(height * 0.2)
+        leg_y = torso_y + torso_h
+        # left leg
+        lx = cx - int(torso_w * 0.22)
+        pygame.draw.rect(surface, (40, 40, 40), (lx - thigh_w // 2, leg_y, thigh_w, thigh_h), border_radius=6)
+        pygame.draw.rect(surface, (30, 30, 30), (lx - thigh_w // 2, leg_y + thigh_h, thigh_w, shin_h), border_radius=6)
+        pygame.draw.rect(surface, (20, 20, 20), (lx - thigh_w // 2, leg_y + thigh_h + shin_h, thigh_w, max(8, int(10 * t.scale))), border_radius=4)
+        # right leg
+        rx = cx + int(torso_w * 0.22)
+        pygame.draw.rect(surface, (40, 40, 40), (rx - thigh_w // 2, leg_y, thigh_w, thigh_h), border_radius=6)
+        pygame.draw.rect(surface, (30, 30, 30), (rx - thigh_w // 2, leg_y + thigh_h, thigh_w, shin_h), border_radius=6)
+        pygame.draw.rect(surface, (20, 20, 20), (rx - thigh_w // 2, leg_y + thigh_h + shin_h, thigh_w, max(8, int(10 * t.scale))), border_radius=4)
+
+        # Health bar (kept similar position)
         bar_w = base_w
         bar_h = max(6, int(10 * t.scale))
         bar_x = cx - bar_w // 2
-        bar_y = apex[1] + 8 + leg_h + 10
+        bar_y = torso_y + torso_h + thigh_h + shin_h + max(4, int(6 * t.scale))
         pygame.draw.rect(surface, (60, 60, 60), (bar_x, bar_y, bar_w, bar_h), border_radius=6)
         if t.alive:
             fill = int((t.body.hits_remaining / CONE_MAX_HITS) * bar_w)
@@ -981,6 +1014,9 @@ class Frontend:
         label = font.render(f"{t.body.hits_remaining if t.body.hits_remaining > 0 else 0}", True, (240, 240, 240))
         lbl_rect = label.get_rect(center=(cx, bar_y + bar_h + 16))
         surface.blit(label, lbl_rect)
+
+        # Store a simple torso rect on the target for collision use
+        t._torso_rect = (torso_x, torso_y, torso_w, torso_h)
 
     def draw_crosshair(self, surface):
         x, y = self.crosshair_pos
