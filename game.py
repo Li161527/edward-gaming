@@ -21,6 +21,7 @@ import sys
 import io
 import wave
 from typing import Tuple, Optional, List
+from array import array
 
 # ---------- CONFIG ----------
 WINDOW_SIZE = (1600, 1000)
@@ -107,7 +108,7 @@ def make_tone(freq=440.0, duration=0.12, volume=0.5, sample_rate=44100):
 
 
 # SFX
-HIT_SOUND = make_tone(900.0, 0.06, 0.6)
+"""HIT_SOUND = make_tone(900.0, 0.06, 0.6)
 DESTROY_SOUND = make_tone(420.0, 0.18, 0.8)
 MISS_SOUND = make_tone(160.0, 0.06, 0.4)
 
@@ -115,7 +116,98 @@ PISTOL_FIRE_SFX = make_tone(1400.0, 0.06, 0.9)
 RIFLE_FIRE_SFX = make_tone(900.0, 0.04, 0.95)
 EMPTY_CLICK = make_tone(240.0, 0.08, 0.25)
 RELOAD_SFX = make_tone(320.0, 0.28, 0.7)
+SHELL_EJECT_SFX = make_tone(800.0, 0.04, 0.25)"""
+
+SAMPLE_RATE_GUN = 44100
+
+def make_deep_boom_shot(duration=0.20, volume=0.70):
+    """M14风格大口径低沉枪声，主频100Hz以内"""
+    n = int(SAMPLE_RATE_GUN * duration)
+    buf = array('h')
+    for i in range(n):
+        t = i / SAMPLE_RATE_GUN
+
+        if t < 0.005:
+            attack_env = t / 0.005
+        else:
+            attack_env = math.exp( -(t - 0.005) * 11 )
+
+        boom_low = math.sin(2 * math.pi * 55 * t)
+        boom_low_env = math.exp(-t * 7.5)
+
+        sub_boom = math.sin(2 * math.pi * 80 * t)
+        sub_boom_env = math.exp(-t * 10)
+
+        metal_res = math.sin(2 * math.pi * 130 * t)
+        metal_res_env = math.exp(-t * 14)
+
+        crack_noise = random.uniform(-0.8, 0.8)
+        noise_env = math.exp(-t * 35)
+
+        mixed = (
+            boom_low * 0.75 * boom_low_env
+            + sub_boom * 0.35 * sub_boom_env
+            + metal_res * 0.18 * metal_res_env
+            + crack_noise * 0.12 * noise_env
+        )
+
+        final = mixed * attack_env * volume
+        final = max(-1.0, min(1.0, final))
+        buf.append(int(final * 32767))
+    return pygame.mixer.Sound(buf)
+
+
+def make_delta_hit(duration=0.09, volume=0.65):
+    """三角洲行动人体命中闷响"""
+    n = int(SAMPLE_RATE_GUN * duration)
+    buf = array('h')
+    for i in range(n):
+        t = i / SAMPLE_RATE_GUN
+
+        if t < 0.004:
+            env_attack = t / 0.004
+        else:
+            env_attack = math.exp(-(t - 0.004) * 22)
+
+        body_thud = math.sin(2 * math.pi * 82 * t)
+        body_env = math.exp(-t * 13)
+
+        crack = random.uniform(-0.65, 0.65)
+        crack_env = math.exp(-t * 42)
+
+        mixed = (
+            body_thud * 0.70 * body_env
+            + crack * 0.20 * crack_env
+        )
+        sample = mixed * env_attack * volume
+        sample = max(-1.0, min(1.0, sample))
+        buf.append(int(sample * 32767))
+    return pygame.mixer.Sound(buf)
+
+
+# ========== 最终音效定义（直接覆盖你原来整段）==========
+"""HIT_SOUND = make_delta_hit(duration=0.09, volume=0.65)
+DESTROY_SOUND = make_tone(420.0, 0.18, 0.8)
+MISS_SOUND = make_tone(160.0, 0.06, 0.4)
+
+PISTOL_FIRE_SFX = make_deep_boom_shot(duration=0.12, volume=0.62)
+RIFLE_FIRE_SFX = make_deep_boom_shot(duration=0.20, volume=0.70)
+EMPTY_CLICK = make_tone(240.0, 0.08, 0.25)
+RELOAD_SFX = make_tone(320.0, 0.28, 0.7)
+SHELL_EJECT_SFX = make_tone(800.0, 0.04, 0.25)"""
+
+HIT_SOUND = make_delta_hit(duration=0.11, volume=0.68)
+DESTROY_SOUND = make_tone(420.0, 0.18, 0.8)
+MISS_SOUND = make_tone(160.0, 0.06, 0.4)
+
+PISTOL_FIRE_SFX = make_deep_boom_shot(duration=0.12, volume=0.62)
+RIFLE_FIRE_SFX = make_deep_boom_shot(duration=0.20, volume=0.70)
+EMPTY_CLICK = make_tone(240.0, 0.08, 0.25)
+RELOAD_SFX = make_tone(320.0, 0.28, 0.7)
 SHELL_EJECT_SFX = make_tone(800.0, 0.04, 0.25)
+
+
+
 
 
 # --- collision helpers ---
