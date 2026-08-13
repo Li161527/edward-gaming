@@ -1,3 +1,4 @@
+# (modified) Aim Trainer — many moving targets with healer/protector types
 import pygame
 import random
 import math
@@ -40,6 +41,12 @@ MIN_SPAWN_SEPARATION = 160  # min pixel separation between concurrently spawned 
 # Spawn count per tick (user requested 3-5)
 SPAWN_MIN = 3
 SPAWN_MAX = 5
+
+# New: heal interval for healer-type targets
+HEAL_INTERVAL = 3.0
+
+# Ratio: regular : healer : protector = 10 : 1 : 1
+SPAWN_TYPE_WEIGHTS = [10, 1, 1]  # order: ['regular','healer','protector']
 # ----------------------------
 
 # Initialize pygame + mixer
@@ -215,12 +222,15 @@ class PersonTarget:
     """
 
     def __init__(self, pos: Tuple[int, int], depth: float = 0.0, move_vector: Tuple[float, float] = (0.0, 0.0),
-                 steps_remaining: int = 0):
+                 steps_remaining: int = 0, target_type: str = 'regular'):
         self.center = pos
         self.depth = clamp(depth, 0.0, 1.0)
         self.body = ConeBody(pos)
         self.move_vector = (float(move_vector[0]), float(move_vector[1]))
         self.steps_remaining = int(steps_remaining)
+        self.target_type = target_type  # 'regular', 'healer', 'protector'
+        # protector spawns with a single-use shield
+        self.shielded = True if self.target_type == 'protector' else False
         self.update_geometry()
         self.alive = True
         self._torso_rect = None
@@ -236,12 +246,14 @@ class PersonTarget:
         self.sphere_center = (self.screen_center[0], self.cone_top_y - SPHERE_RADIUS * 0.28 * self.scale)
         self.arm_y = self.cone_top_y + self.cone_height * 0.12
 
-    def reset(self, pos: Tuple[int, int], depth: float = 0.0, move_vector=(0.0, 0.0), steps_remaining=0):
+    def reset(self, pos: Tuple[int, int], depth: float = 0.0, move_vector=(0.0, 0.0), steps_remaining=0, target_type: str = 'regular'):
         self.center = pos
         self.depth = clamp(depth, 0.0, 1.0)
         self.body.reset(pos)
         self.move_vector = (float(move_vector[0]), float(move_vector[1]))
         self.steps_remaining = int(steps_remaining)
+        self.target_type = target_type
+        self.shielded = True if self.target_type == 'protector' else False
         self.update_geometry()
         self.alive = True
         self._torso_rect = None
@@ -257,6 +269,10 @@ class PersonTarget:
         self.update_geometry()
 
     def damage_body(self, amount=1):
+        # protectors block the first hit
+        if self.shielded:
+            self.shielded = False
+            return
         if not self.body.alive:
             return
         self.body.damage(amount)
@@ -264,6 +280,10 @@ class PersonTarget:
             self.alive = False
 
     def destroy_by_head(self):
+        # headshots also blocked by shield once
+        if self.shielded:
+            self.shielded = False
+            return
         self.body.alive = False
         self.alive = False
 
@@ -285,6 +305,8 @@ class Backend:
         self.spawn_acc = 0.0
         self.reached = False
         self.total_spawned = 0
+        # healing accumulator when healer-type exists
+        self.heal_acc = 0.0
 
     def compute_spawn_bounds(self):
         top_offset = - (CONE_HEIGHT / 2.0) - (SPHERE_RADIUS * 1.28)
@@ -379,7 +401,10 @@ class Backend:
             sx = (fx - p[0]) / float(steps_total)
             sy = (fy - p[1]) / float(steps_total)
 
-            t = PersonTarget(p, depth=depth, move_vector=(sx, sy), steps_remaining=steps_total)
+            # choose target type by weights (regular/healer/protector)
+            ttype = random.choices(['regular', 'healer', 'protector'], weights=SPAWN_TYPE_WEIGHTS, k=1)[0]
+
+            t = PersonTarget(p, depth=depth, move_vector=(sx, sy), steps_remaining=steps_total, target_type=ttype)
             self.targets.append(t)
             spawned.append(p)
             alive_positions.append(t.screen_center)
@@ -404,6 +429,7 @@ class Backend:
         - Advance all alive targets by their (constant) move_vector every MOVE_INTERVAL.
         - Remove dead targets immediately (no corpse).
         - Mark self.reached True if any alive target gets within REACH_DISTANCE of front_pos.
+        - Healer-type targets heal all alive targets by 1 HP every HEAL_INTERVAL seconds while any healer is alive.
         """
         # Clean up dead immediately
         self.remove_dead()
@@ -420,6 +446,15 @@ class Backend:
                 if spawn_n <= 0:
                     break
                 self.spawn_many_farthest(front_pos, remaining_time_s, spawn_n)
+
+        # healing logic: if any healer alive, accumulate and heal every HEAL_INTERVAL
+        if any(t.alive and t.target_type == 'healer' for t in self.targets):
+            self.heal_acc += dt
+            while self.heal_acc >= HEAL_INTERVAL:
+                self.heal_acc -= HEAL_INTERVAL
+                for t in self.targets:
+                    if t.alive:
+                        t.body.hits_remaining = min(CONE_MAX_HITS, t.body.hits_remaining + 1)
 
         # movement logic
         if not self.targets:
@@ -802,6 +837,15 @@ class Frontend:
                 scaled_radius = max(4, int(SPHERE_RADIUS * t.scale))
                 # headshot check (same as before)
                 if point_in_sphere(mx, my, sx, sy, scaled_radius):
+                    # protectors can block a headshot once
+                    if t.shielded:
+                        t.shielded = False
+                        try:
+                            MISS_SOUND.play()
+                        except Exception:
+                            pass
+                        hit_any = True
+                        break
                     self.hits += 1
                     t.destroy_by_head()
                     self.points += 1
@@ -824,6 +868,15 @@ class Frontend:
                     torso_x, torso_y, torso_w, torso_h = torso
 
                 if point_in_rect(mx, my, torso_x, torso_y, torso_w, torso_h):
+                    # protector shield consumes first hit
+                    if t.shielded:
+                        t.shielded = False
+                        try:
+                            MISS_SOUND.play()
+                        except Exception:
+                            pass
+                        hit_any = True
+                        break
                     self.hits += 1
                     t.damage_body(1)
                     try:
@@ -907,13 +960,19 @@ class Frontend:
         height = int(t.cone_height)
         depth_tint = int(lerp(0, 60, t.depth))
 
-        # Colors (adjusted by depth)
+        # Colors (adjusted by depth) and type-based variation
         if not t.alive:
             skin_col = (120, 110, 100)
             cloth_col = (90, 90, 90)
         else:
             skin_base = (250, 210, 150)
-            cloth_base = BODY_COLOR if t.body.hits_remaining == CONE_MAX_HITS else HIT_BODY_COLOR
+            # healer has greenish cloth, protector slightly different tint
+            if t.target_type == 'healer':
+                cloth_base = (100, 200, 120)
+            elif t.target_type == 'protector':
+                cloth_base = (120, 160, 220)
+            else:
+                cloth_base = BODY_COLOR if t.body.hits_remaining == CONE_MAX_HITS else HIT_BODY_COLOR
             skin_col = (max(0, skin_base[0] - depth_tint), max(0, skin_base[1] - depth_tint), max(0, skin_base[2] - depth_tint))
             cloth_col = (max(0, cloth_base[0] - depth_tint), max(0, cloth_base[1] - depth_tint), max(0, cloth_base[2] - depth_tint))
 
@@ -1015,6 +1074,21 @@ class Frontend:
         lbl_rect = label.get_rect(center=(cx, bar_y + bar_h + 16))
         surface.blit(label, lbl_rect)
 
+        # Draw healer/protector indicators:
+        if t.target_type == 'healer' and t.alive:
+            # small plus sign on the torso
+            plus_color = (230, 250, 230)
+            px = cx
+            py = torso_y + torso_h // 2
+            size = max(6, int(10 * t.scale))
+            pygame.draw.rect(surface, plus_color, (px - size // 6, py - size, size // 3, size * 2))
+            pygame.draw.rect(surface, plus_color, (px - size, py - size // 6, size * 2, size // 3))
+        if t.target_type == 'protector' and t.alive:
+            # shield ring around torso; brighter if shielded
+            ring_color = (120, 200, 255) if t.shielded else (70, 120, 160)
+            ring_radius = int(max(torso_w, torso_h) * 0.9)
+            pygame.draw.circle(surface, ring_color, (cx, torso_y + torso_h // 2), ring_radius, max(2, int(3 * t.scale)))
+
         # Store a simple torso rect on the target for collision use
         t._torso_rect = (torso_x, torso_y, torso_w, torso_h)
 
@@ -1101,6 +1175,7 @@ def main():
                     backend.move_acc = 0.0
                     backend.spawn_acc = 0.0
                     backend.reached = False
+                    backend.heal_acc = 0.0
                 elif event.key == pygame.K_e:
                     frontend.reload_current()
                 elif event.key == pygame.K_1:
