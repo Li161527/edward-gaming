@@ -175,7 +175,7 @@ MISS_SOUND = make_tone(160.0, 0.06, 0.4)
 PISTOL_FIRE_SFX = make_deep_boom_shot(duration=0.12, volume=0.62)
 RIFLE_FIRE_SFX = make_deep_boom_shot(duration=0.20, volume=0.70)
 EMPTY_CLICK = make_tone(240.0, 0.08, 0.25)
-RELOAD_SFX = make_tone(320.0, 0.28, 0.7)
+RELOAD_SFX = make_tone(220.0, 0.28, 0.7)
 SHELL_EJECT_SFX = make_tone(800.0, 0.04, 0.25)
 
 
