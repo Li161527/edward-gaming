@@ -1,6 +1,5 @@
-# (modified) Aim Trainer — many moving targets with healer/protector types
-# Ballistics removed: only hit/miss feedback remains (visual + sound).
-# Background music now loads from an MP3 file in the same folder.
+# Full working Aim Trainer with respawners, specials, final-10s slowdown,
+# Rifle magazine increased (+30), and Gatling unlocked at 60s.
 import pygame
 import random
 import math
@@ -18,8 +17,6 @@ BODY_COLOR = (78, 160, 220)
 HIT_BODY_COLOR = (220, 120, 120)
 HEAD_COLOR = (250, 210, 150)
 EYE_COLOR = (40, 40, 40)
-ARM_COLOR = (95, 95, 95)
-LEG_COLOR = (50, 50, 50)
 HUD_COLOR = (230, 230, 230)
 
 # Person target geometry (base sizes, will be scaled by depth)
@@ -35,27 +32,30 @@ FONT_NAME = None
 SFX_VOLUME = 0.16
 
 # Movement / spawn tuning
-MOVE_INTERVAL = 0.2      # each target advances every 0.2s
-SPAWN_INTERVAL = 1.0     # spawn attempt every 1 second
-REACH_DISTANCE = 48      # pixels considered "reached" (collision with front)
-MAX_SIMULTANEOUS_ALIVE = 300  # soft cap for performance
-MIN_SPAWN_SEPARATION = 160  # min pixel separation between concurrently spawned targets
+MOVE_INTERVAL = 0.2
+SPAWN_INTERVAL = 1.0
+REACH_DISTANCE = 48
+MAX_SIMULTANEOUS_ALIVE = 300
+MIN_SPAWN_SEPARATION = 160
 
-# Spawn count per tick (user requested 3-5)
 SPAWN_MIN = 3
 SPAWN_MAX = 5
 
-# New: heal interval for healer-type targets
 HEAL_INTERVAL = 3.0
 
-# Ratio: regular : healer : protector = 10 : 1 : 1
-SPAWN_TYPE_WEIGHTS = [10, 1, 1]  # order: ['regular','healer','protector']
+# regular : healer : respawner : protector = 8 : 1 : 1 : 1
+SPAWN_TYPE_WEIGHTS = [8, 1, 1, 1]
 
-# Background music filename (place an MP3 named this in the same folder)
+RESPAWN_DELAY = 2.0
+
+SLOW_SPAWN_MULTIPLIER = 2.0
+SLOW_SPAWN_DURATION = 40.0
+
+LAST10_SPAWN_MULTIPLIER = 2.0
+
 MUSIC_FILE = "background.mp3"
 # ----------------------------
 
-# Initialize pygame + mixer
 pygame.init()
 try:
     pygame.mixer.init(frequency=44100, size=-16, channels=2)
@@ -63,7 +63,7 @@ except Exception:
     pass
 
 screen = pygame.display.set_mode(WINDOW_SIZE)
-pygame.display.set_caption("Aim Trainer — many moving targets (hit feedback only)")
+pygame.display.set_caption("Aim Trainer — many moving targets")
 
 clock = pygame.time.Clock()
 font = pygame.font.Font(FONT_NAME, 20)
@@ -78,7 +78,7 @@ def lerp(a, b, t):
     return a + (b - a) * t
 
 
-# --- sound helper ---
+# --- sound helpers ---
 def make_tone(freq=440.0, duration=0.12, volume=0.5, sample_rate=44100):
     n_samples = int(sample_rate * duration)
     buf = io.BytesIO()
@@ -104,41 +104,32 @@ def make_tone(freq=440.0, duration=0.12, volume=0.5, sample_rate=44100):
     return sound
 
 
-# SFX
 SAMPLE_RATE_GUN = 44100
 
 
 def make_deep_boom_shot(duration=0.20, volume=0.70):
-    """M14风格大口径低沉枪声，主频100Hz以内"""
     n = int(SAMPLE_RATE_GUN * duration)
     buf = array('h')
     for i in range(n):
         t = i / SAMPLE_RATE_GUN
-
         if t < 0.005:
             attack_env = t / 0.005
         else:
             attack_env = math.exp(-(t - 0.005) * 11)
-
         boom_low = math.sin(2 * math.pi * 55 * t)
         boom_low_env = math.exp(-t * 7.5)
-
         sub_boom = math.sin(2 * math.pi * 80 * t)
         sub_boom_env = math.exp(-t * 10)
-
         metal_res = math.sin(2 * math.pi * 130 * t)
         metal_res_env = math.exp(-t * 14)
-
         crack_noise = random.uniform(-0.8, 0.8)
         noise_env = math.exp(-t * 35)
-
         mixed = (
             boom_low * 0.75 * boom_low_env
             + sub_boom * 0.35 * sub_boom_env
             + metal_res * 0.18 * metal_res_env
             + crack_noise * 0.12 * noise_env
         )
-
         final = mixed * attack_env * volume
         final = max(-1.0, min(1.0, final))
         buf.append(int(final * 32767))
@@ -146,23 +137,18 @@ def make_deep_boom_shot(duration=0.20, volume=0.70):
 
 
 def make_delta_hit(duration=0.09, volume=0.65):
-    """三角洲行动人体命中闷响"""
     n = int(SAMPLE_RATE_GUN * duration)
     buf = array('h')
     for i in range(n):
         t = i / SAMPLE_RATE_GUN
-
         if t < 0.004:
             env_attack = t / 0.004
         else:
             env_attack = math.exp(-(t - 0.004) * 22)
-
         body_thud = math.sin(2 * math.pi * 82 * t)
         body_env = math.exp(-t * 13)
-
         crack = random.uniform(-0.65, 0.65)
         crack_env = math.exp(-t * 42)
-
         mixed = (
             body_thud * 0.70 * body_env
             + crack * 0.20 * crack_env
@@ -173,11 +159,9 @@ def make_delta_hit(duration=0.09, volume=0.65):
     return pygame.mixer.Sound(buf)
 
 
-# Final SFX
 HIT_SOUND = make_delta_hit(duration=0.11, volume=0.68)
 DESTROY_SOUND = make_tone(420.0, 0.18, 0.8)
 MISS_SOUND = make_tone(160.0, 0.06, 0.4)
-
 PISTOL_FIRE_SFX = make_deep_boom_shot(duration=0.12, volume=0.62)
 RIFLE_FIRE_SFX = make_deep_boom_shot(duration=0.20, volume=0.70)
 EMPTY_CLICK = make_tone(140.0, 0.08, 0.25)
@@ -189,32 +173,25 @@ def point_in_sphere(px, py, sx, sy, r):
     return (px - sx) ** 2 + (py - sy) ** 2 <= r * r
 
 
-def point_in_cone(px, py, cx, base_y, base_w, height):
-    if py < base_y or py > base_y + height:
-        return False
-    frac = (py - base_y) / height
-    half_width_at_y = (1.0 - frac) * (base_w / 2.0)
-    return abs(px - cx) <= half_width_at_y
-
-
 def point_in_rect(px, py, rx, ry, rw, rh):
     return (px >= rx) and (px <= rx + rw) and (py >= ry) and (py <= ry + rh)
 
 
-# --- Target classes (Backend) ---
+# --- Targets ---
 class ConeBody:
-    def __init__(self, pos):
+    def __init__(self, pos, max_hits=CONE_MAX_HITS):
         self.center = pos
-        self.hits_remaining = CONE_MAX_HITS
+        self.max_hits = int(max_hits)
+        self.hits_remaining = int(self.max_hits)
         self.alive = True
 
     def reset(self, pos):
         self.center = pos
-        self.hits_remaining = CONE_MAX_HITS
+        self.hits_remaining = int(self.max_hits)
         self.alive = True
 
     def damage(self, amount=1):
-        self.hits_remaining = max(0, self.hits_remaining - amount)
+        self.hits_remaining = max(0, self.hits_remaining - int(amount))
         if self.hits_remaining == 0:
             self.alive = False
 
@@ -224,14 +201,17 @@ class PersonTarget:
                  steps_remaining: int = 0, target_type: str = 'regular'):
         self.center = pos
         self.depth = clamp(depth, 0.0, 1.0)
-        self.body = ConeBody(pos)
+        self.body = ConeBody(pos, max_hits=CONE_MAX_HITS)
         self.move_vector = (float(move_vector[0]), float(move_vector[1]))
         self.steps_remaining = int(steps_remaining)
-        self.target_type = target_type  # 'regular', 'healer', 'protector'
+        self.target_type = target_type
         self.shielded = True if self.target_type == 'protector' else False
         self.update_geometry()
         self.alive = True
         self._torso_rect = None
+        self.spawn_params = (pos, self.depth, self.move_vector, self.steps_remaining, self.target_type)
+        self.respawn_timer: Optional[float] = None
+        self.respawned_once = False
 
     def update_geometry(self):
         cx, cy = self.center
@@ -247,7 +227,7 @@ class PersonTarget:
     def reset(self, pos: Tuple[int, int], depth: float = 0.0, move_vector=(0.0, 0.0), steps_remaining=0, target_type: str = 'regular'):
         self.center = pos
         self.depth = clamp(depth, 0.0, 1.0)
-        self.body.reset(pos)
+        self.body = ConeBody(pos, max_hits=CONE_MAX_HITS)
         self.move_vector = (float(move_vector[0]), float(move_vector[1]))
         self.steps_remaining = int(steps_remaining)
         self.target_type = target_type
@@ -255,6 +235,8 @@ class PersonTarget:
         self.update_geometry()
         self.alive = True
         self._torso_rect = None
+        self.respawn_timer = None
+        self.spawn_params = (pos, self.depth, self.move_vector, self.steps_remaining, self.target_type)
 
     def advance_step(self):
         if not self.alive:
@@ -265,6 +247,15 @@ class PersonTarget:
         self.steps_remaining = max(0, self.steps_remaining - 1)
         self.update_geometry()
 
+    def on_death(self):
+        if self.target_type == 'respawner' and (not self.respawned_once):
+            self.respawn_timer = RESPAWN_DELAY
+            self.alive = False
+            self.respawned_once = True
+        else:
+            self.respawn_timer = None
+            self.alive = False
+
     def damage_body(self, amount=1):
         if self.shielded:
             self.shielded = False
@@ -273,14 +264,14 @@ class PersonTarget:
             return
         self.body.damage(amount)
         if not self.body.alive:
-            self.alive = False
+            self.on_death()
 
     def destroy_by_head(self):
         if self.shielded:
             self.shielded = False
             return
         self.body.alive = False
-        self.alive = False
+        self.on_death()
 
     def bounding_box(self):
         cx, cy = self.screen_center
@@ -290,7 +281,7 @@ class PersonTarget:
         return (cx - half_w, top_y, cx + half_w, bottom_y)
 
 
-# --- Backend (spawning / movement) ---
+# --- Backend ---
 class Backend:
     def __init__(self, screen_size):
         self.screen_w, self.screen_h = screen_size
@@ -301,6 +292,8 @@ class Backend:
         self.reached = False
         self.total_spawned = 0
         self.heal_acc = 0.0
+        self.spawn_interval_multiplier = 1.0
+        self.spawn_slow_timer = 0.0
 
     def compute_spawn_bounds(self):
         top_offset = - (CONE_HEIGHT / 2.0) - (SPHERE_RADIUS * 1.28)
@@ -337,7 +330,6 @@ class Backend:
     def spawn_many_farthest(self, front_pos: Tuple[int, int], remaining_time_s: float, n_to_spawn: int):
         if n_to_spawn <= 0:
             return []
-
         alive_now = len([t for t in self.targets if t.alive])
         if alive_now >= MAX_SIMULTANEOUS_ALIVE:
             return []
@@ -349,12 +341,12 @@ class Backend:
         if candidates_with_dist:
             candidates_with_dist.pop(0)
         candidates_with_dist.sort(key=lambda x: x[1], reverse=True)
-        ordered_candidates = [p for (p, _) in candidates_with_dist]
+        ordered = [p for (p, _) in candidates_with_dist]
 
         spawned = []
         alive_positions = [t.screen_center for t in self.targets if t.alive]
 
-        for p in ordered_candidates:
+        for p in ordered:
             if len(spawned) >= n_to_spawn:
                 break
             too_close = False
@@ -380,8 +372,7 @@ class Backend:
             sx = (fx - p[0]) / float(steps_total)
             sy = (fy - p[1]) / float(steps_total)
 
-            ttype = random.choices(['regular', 'healer', 'protector'], weights=SPAWN_TYPE_WEIGHTS, k=1)[0]
-
+            ttype = random.choices(['regular', 'healer', 'respawner', 'protector'], weights=SPAWN_TYPE_WEIGHTS, k=1)[0]
             t = PersonTarget(p, depth=depth, move_vector=(sx, sy), steps_remaining=steps_total, target_type=ttype)
             self.targets.append(t)
             spawned.append(p)
@@ -398,15 +389,38 @@ class Backend:
         return self.targets
 
     def remove_dead(self):
-        self.targets = [t for t in self.targets if t.alive]
+        new_targets = []
+        for t in self.targets:
+            if t.alive:
+                new_targets.append(t)
+            else:
+                if getattr(t, "respawn_timer", None) is not None:
+                    new_targets.append(t)
+        self.targets = new_targets
 
     def update(self, dt: float, front_pos: Tuple[int, int], remaining_time_s: float):
+        if self.spawn_slow_timer > 0.0:
+            self.spawn_slow_timer -= dt
+            if self.spawn_slow_timer <= 0.0:
+                self.spawn_interval_multiplier = 1.0
+                self.spawn_slow_timer = 0.0
+
         self.remove_dead()
+
+        for t in list(self.targets):
+            if not t.alive and getattr(t, "respawn_timer", None) is not None:
+                t.respawn_timer -= dt
+                if t.respawn_timer <= 0.0:
+                    pos, depth, mv, steps, ttype = t.spawn_params
+                    t.reset(pos, depth=depth, move_vector=mv, steps_remaining=steps, target_type=ttype)
+                    self.total_spawned += 1
 
         if remaining_time_s > 0.0:
             self.spawn_acc += dt
-            while self.spawn_acc >= SPAWN_INTERVAL:
-                self.spawn_acc -= SPAWN_INTERVAL
+            last10_mult = LAST10_SPAWN_MULTIPLIER if remaining_time_s <= 10.0 else 1.0
+            current_spawn_interval = SPAWN_INTERVAL * self.spawn_interval_multiplier * last10_mult
+            while self.spawn_acc >= current_spawn_interval:
+                self.spawn_acc -= current_spawn_interval
                 spawn_n = random.randint(SPAWN_MIN, SPAWN_MAX)
                 alive_now = len([t for t in self.targets if t.alive])
                 capacity = max(0, MAX_SIMULTANEOUS_ALIVE - alive_now)
@@ -421,7 +435,7 @@ class Backend:
                 self.heal_acc -= HEAL_INTERVAL
                 for t in self.targets:
                     if t.alive:
-                        t.body.hits_remaining = min(CONE_MAX_HITS, t.body.hits_remaining + 1)
+                        t.body.hits_remaining = min(t.body.max_hits, t.body.hits_remaining + 1)
 
         if not self.targets:
             return
@@ -444,14 +458,7 @@ class Backend:
         return sum(1 for t in self.targets if t.alive)
 
 
-# --- Visual / Gun Model Helpers ---
-def vec_angle(a, b):
-    dx = b[0] - a[0]
-    dy = b[1] - a[1]
-    return math.degrees(math.atan2(-dy, dx))
-
-
-# --- Gun models (ballistics removed) ---
+# --- Gun / Weapon models ---
 class GunModel:
     def __init__(self):
         self.recoil = 0.0
@@ -462,6 +469,10 @@ class GunModel:
             self.recoil = max(0.0, self.recoil - dt * self.recoil * 6.0 - dt * 60.0)
         if self.rot_recoil > 0:
             self.rot_recoil = max(0.0, self.rot_recoil - dt * 160.0)
+
+    def reset(self):
+        self.recoil = 0.0
+        self.rot_recoil = 0.0
 
 
 class PistolModel(GunModel):
@@ -485,6 +496,11 @@ class PistolModel(GunModel):
         self.slide_vel -= self.slide_back * self.slide_speed * dt * 2.0
         self.slide_vel *= (1.0 - dt * 6.0)
         self.slide_back = clamp(self.slide_back, 0.0, 1.0)
+
+    def reset(self):
+        super().reset()
+        self.slide_back = 0.0
+        self.slide_vel = 0.0
 
     def draw(self, surface, base_pos, aim_angle_deg, scale=1.0):
         cx, cy = base_pos
@@ -548,6 +564,12 @@ class RifleModel(GunModel):
         self.bolt = clamp(self.bolt, 0.0, 1.0)
         self.sway_phase += dt * 1.2
 
+    def reset(self):
+        super().reset()
+        self.bolt = 0.0
+        self.bolt_vel = 0.0
+        self.sway_phase = 0.0
+
     def draw(self, surface, base_pos, aim_angle_deg, scale=1.0):
         cx, cy = base_pos
         w = int(self.width * scale)
@@ -592,13 +614,65 @@ class RifleModel(GunModel):
         return muzzle_world, gun_rect
 
 
-# --- Weapon (logic/state) ---
+class GatlingModel(GunModel):
+    def __init__(self):
+        super().__init__()
+        self.spin = 0.0
+        self.width = 1100
+        self.height = 220
+        self.muzzle_local = (0.96, 0.34)
+
+    def on_fire(self, muzzle_world, muzzle_angle_deg):
+        self.recoil += 4.0
+        self.rot_recoil += random.uniform(1.0, 3.0)
+        self.spin += 0.5
+
+    def update(self, dt):
+        super().update(dt)
+        # decay spin slowly
+        self.spin = max(0.0, self.spin - dt * 0.6)
+
+    def reset(self):
+        super().reset()
+        self.spin = 0.0
+
+    def draw(self, surface, base_pos, aim_angle_deg, scale=1.0):
+        cx, cy = base_pos
+        w = int(self.width * scale)
+        h = int(self.height * scale)
+        gun_surf = pygame.Surface((w, h), pygame.SRCALPHA)
+        gun_surf = gun_surf.convert_alpha()
+        pygame.draw.rect(gun_surf, (24, 24, 24), (int(w * 0.05), int(h * 0.48), int(w * 0.7), int(h * 0.28)), border_radius=10)
+        # barrels
+        bar_x = int(w * 0.72)
+        bar_y = int(h * 0.22)
+        pygame.draw.rect(gun_surf, (60, 60, 60), (bar_x, bar_y, int(w * 0.24), int(h * 0.12)))
+        # rotate slightly with rot_recoil
+        total_angle = aim_angle_deg - (self.rot_recoil * 0.6)
+        rotated = pygame.transform.rotate(gun_surf, total_angle)
+        rect = rotated.get_rect(center=(cx, cy - int(self.recoil)))
+        surface.blit(rotated, rect.topleft)
+        m_local_x = int(w * self.muzzle_local[0])
+        m_local_y = int(h * self.muzzle_local[1])
+        center_local = (w / 2.0, h / 2.0)
+        relx = m_local_x - center_local[0]
+        rely = m_local_y - center_local[1]
+        ang_rad = math.radians(-(total_angle))
+        rx = relx * math.cos(ang_rad) - rely * math.sin(ang_rad)
+        ry = relx * math.sin(ang_rad) + rely * math.cos(ang_rad)
+        muzzle_world = (rect.left + center_local[0] + rx, rect.top + center_local[1] + ry)
+        gun_rect = rect
+        return muzzle_world, gun_rect
+
+
+# --- Weapon logic ---
 class Weapon:
     def __init__(self, name, mag_size, reserve, fire_rate, automatic, reload_time, model: GunModel):
         self.name = name
         self.mag_size = mag_size
         self.ammo = mag_size
         self.reserve = reserve
+        self.initial_reserve = int(reserve)
         self.fire_rate = fire_rate
         self.automatic = automatic
         self.reload_time = reload_time
@@ -619,8 +693,11 @@ class Weapon:
             self.cooldown = 0.12
             return False
         self.ammo -= 1
-        self.cooldown = 1.0 / self.fire_rate
-        self.model.on_fire(muzzle_world, muzzle_angle_deg)
+        self.cooldown = 1.0 / self.fire_rate if self.fire_rate > 0 else 0.1
+        try:
+            self.model.on_fire(muzzle_world, muzzle_angle_deg)
+        except Exception:
+            pass
         try:
             if self.name == "Pistol":
                 PISTOL_FIRE_SFX.play()
@@ -652,10 +729,28 @@ class Weapon:
                 self.ammo += take
                 self.reserve -= take
                 self.reloading = False
-        self.model.update(dt)
+        try:
+            self.model.update(dt)
+        except Exception:
+            pass
+
+    def restore_initial_state(self):
+        self.ammo = self.mag_size
+        self.reserve = int(self.initial_reserve)
+        self.reloading = False
+        self.reload_timer = 0.0
+        self.cooldown = 0.0
+        try:
+            self.model.reset()
+        except Exception:
+            try:
+                self.model.recoil = 0.0
+                self.model.rot_recoil = 0.0
+            except Exception:
+                pass
 
 
-# --- Frontend (UI / player) ---
+# --- Frontend / Player ---
 class Frontend:
     def __init__(self, screen, backend: Backend):
         self.screen = screen
@@ -665,19 +760,28 @@ class Frontend:
         self.shots = 0
         self.start_time = pygame.time.get_ticks()
         self.duration_ms = GAME_LENGTH_SECS * 1000
+
         self.pistol_model = PistolModel()
         self.rifle_model = RifleModel()
-        self.weapons = [
-            Weapon("Pistol", mag_size=24, reserve=96, fire_rate=5.0, automatic=False, reload_time=1.3, model=self.pistol_model),
-            Weapon("Rifle", mag_size=60, reserve=240, fire_rate=12.0, automatic=True, reload_time=2.4, model=self.rifle_model),
-        ]
+        self.gatling_model = GatlingModel()
+
+        # Weapon 1: Pistol
+        w1 = Weapon("Pistol", mag_size=24, reserve=96, fire_rate=5.0, automatic=False, reload_time=1.3, model=self.pistol_model)
+        # Weapon 2: Rifle (increased magazine by +30 => 90)
+        w2 = Weapon("Rifle", mag_size=90, reserve=360, fire_rate=12.0, automatic=True, reload_time=2.4, model=self.rifle_model)
+        self.weapons: List[Weapon] = [w1, w2]
+        self.gatling_unlocked = False
+        self.gatling_index = None
+
         self.current_weapon_idx = 0
         self.crosshair_pos = (WINDOW_SIZE[0] // 2, WINDOW_SIZE[1] // 2)
         self.left_mouse_held = False
         self.front_end_exclude = self.compute_frontend_exclusion_rect()
-        self.game_state = 'playing'  # 'playing', 'won', 'lost'
-        # hit feedback: list of (x, y, remaining_time, color)
+        self.game_state = 'playing'
         self.hit_feedback: List[Tuple[int, int, float, Tuple[int, int, int]]] = []
+
+        self.special_choice_available = False
+        self.special_choice_used = False
 
     def compute_frontend_exclusion_rect(self):
         cx = WINDOW_SIZE[0] // 2
@@ -696,12 +800,26 @@ class Frontend:
     def is_over(self):
         return self.game_state != 'playing'
 
+    def maybe_unlock_gatling(self):
+        if not self.gatling_unlocked:
+            # create gatling weapon and append
+            g = Weapon("Gatling", mag_size=240, reserve=960, fire_rate=24.0, automatic=True, reload_time=4.8, model=self.gatling_model)
+            self.weapons.append(g)
+            self.gatling_unlocked = True
+            self.gatling_index = len(self.weapons) - 1
+
     def update(self, dt):
         for w in self.weapons:
             w.update(dt)
 
         base_pos = (WINDOW_SIZE[0] // 2, WINDOW_SIZE[1] - 150)
         remaining_time_s = max(0.0, (self.duration_ms - (pygame.time.get_ticks() - self.start_time)) / 1000.0)
+
+        # unlock gatling at 60s
+        elapsed_s = (pygame.time.get_ticks() - self.start_time) / 1000.0
+        if elapsed_s >= 60.0 and not self.gatling_unlocked:
+            self.maybe_unlock_gatling()
+
         self.backend.update(dt, base_pos, remaining_time_s)
 
         if self.backend.reached and self.game_state == 'playing':
@@ -714,7 +832,6 @@ class Frontend:
             else:
                 self.game_state = 'lost'
 
-        # update hit feedback timers
         new_feedback = []
         for x, y, rem, col in self.hit_feedback:
             rem -= dt
@@ -722,7 +839,10 @@ class Frontend:
                 new_feedback.append((x, y, rem, col))
         self.hit_feedback = new_feedback
 
-    def current_weapon(self):
+        if (elapsed_s >= 60.0) and (not self.special_choice_used):
+            self.special_choice_available = True
+
+    def current_weapon(self) -> Weapon:
         return self.weapons[self.current_weapon_idx]
 
     def fire(self):
@@ -731,7 +851,6 @@ class Frontend:
         w = self.current_weapon()
         base_pos = (WINDOW_SIZE[0] // 2, WINDOW_SIZE[1] - 150)
         aim_angle = vec_angle(base_pos, self.crosshair_pos)
-        # compute muzzle_world (used only for recoil realism; no ballistic visuals)
         muzzle_world, _ = w.model.draw(self.screen, base_pos, aim_angle, scale=1.0)
         if not w.can_fire():
             if w.ammo == 0 and not w.reloading:
@@ -757,18 +876,22 @@ class Frontend:
                             MISS_SOUND.play()
                         except Exception:
                             pass
-                        # show small red 'blocked' marker near crosshair
                         self.hit_feedback.append((mx, my, 0.18, (200, 80, 80)))
                         hit_any = True
                         break
                     self.hits += 1
                     t.destroy_by_head()
-                    self.points += 1
-                    try:
-                        DESTROY_SOUND.play()
-                    except Exception:
-                        pass
-                    # green hit marker at impact
+                    if getattr(t, "respawn_timer", None) is None:
+                        self.points += 1
+                        try:
+                            DESTROY_SOUND.play()
+                        except Exception:
+                            pass
+                    else:
+                        try:
+                            HIT_SOUND.play()
+                        except Exception:
+                            pass
                     self.hit_feedback.append((mx, my, 0.28, (120, 255, 160)))
                     hit_any = True
                     break
@@ -799,7 +922,7 @@ class Frontend:
                         HIT_SOUND.play()
                     except Exception:
                         pass
-                    if not t.alive:
+                    if not t.alive and getattr(t, "respawn_timer", None) is None:
                         self.points += 1
                         try:
                             DESTROY_SOUND.play()
@@ -814,10 +937,8 @@ class Frontend:
                     MISS_SOUND.play()
                 except Exception:
                     pass
-                # show miss marker at crosshair
                 self.hit_feedback.append((mx, my, 0.18, (220, 90, 90)))
 
-            # remove dead immediately
             self.backend.remove_dead()
         return True
 
@@ -839,7 +960,15 @@ class Frontend:
     def reload_current(self):
         self.current_weapon().start_reload()
 
-    # --- render ---
+    def restore_all_weapons_to_initial(self):
+        for w in self.weapons:
+            w.restore_initial_state()
+
+    def slow_spawn_choice(self):
+        self.backend.spawn_interval_multiplier = SLOW_SPAWN_MULTIPLIER
+        self.backend.spawn_slow_timer = SLOW_SPAWN_DURATION
+
+    # --- rendering ---
     def draw_hud(self, surface):
         left = 12
         top = 8
@@ -862,18 +991,27 @@ class Frontend:
         surface.blit(txt_spawned, (left, top + gap * 4))
         surface.blit(txt_alive, (left, top + gap * 5))
 
-        # right HUD
         w = self.current_weapon()
         txt_weapon = font.render(f"Weapon: {w.name}", True, color)
         txt_ammo = font.render(f"Ammo: {w.ammo}/{w.mag_size}  Reserve: {w.reserve}", True, color)
-        hint = font.render("1=Pistol  2=Rifle  E=Reload  R=Restart", True, (200, 200, 200))
+        hint_str = "1=Pistol  2=Rifle  E=Reload  R=Restart"
+        if self.gatling_unlocked:
+            hint_str = "1=Pistol  2=Rifle  3=Gatling  E=Reload  R=Restart"
+        hint = font.render(hint_str, True, (200, 200, 200))
         surface.blit(txt_weapon, (WINDOW_SIZE[0] - 380, top))
         surface.blit(txt_ammo, (WINDOW_SIZE[0] - 380, top + gap))
         surface.blit(hint, (WINDOW_SIZE[0] - 720, WINDOW_SIZE[1] - 40))
 
+        if self.special_choice_available and (not self.special_choice_used):
+            choice_txt = font.render("CHOICE: L = Restore ALL weapons  |  S = Slow spawns (one-time)", True, (220, 220, 150))
+            surface.blit(choice_txt, (WINDOW_SIZE[0] // 2 - choice_txt.get_width() // 2, WINDOW_SIZE[1] - 70))
+
+        if self.backend.spawn_slow_timer > 0.0:
+            txt_slow = font.render(f"Spawn slow: {int(math.ceil(self.backend.spawn_slow_timer))}s", True, (180, 220, 255))
+            surface.blit(txt_slow, (WINDOW_SIZE[0] - 220, top + gap * 3))
+
     def draw_person(self, surface, t: PersonTarget):
         cx = int(t.screen_center[0])
-        cy = int(t.screen_center[1])
         base_y = int(t.cone_top_y)
         base_w = int(t.cone_base_w)
         height = int(t.cone_height)
@@ -888,8 +1026,10 @@ class Frontend:
                 cloth_base = (100, 200, 120)
             elif t.target_type == 'protector':
                 cloth_base = (120, 160, 220)
+            elif t.target_type == 'respawner':
+                cloth_base = (180, 120, 220)
             else:
-                cloth_base = BODY_COLOR if t.body.hits_remaining == CONE_MAX_HITS else HIT_BODY_COLOR
+                cloth_base = BODY_COLOR if t.body.hits_remaining == t.body.max_hits else HIT_BODY_COLOR
             skin_col = (max(0, skin_base[0] - depth_tint), max(0, skin_base[1] - depth_tint), max(0, skin_base[2] - depth_tint))
             cloth_col = (max(0, cloth_base[0] - depth_tint), max(0, cloth_base[1] - depth_tint), max(0, cloth_base[2] - depth_tint))
 
@@ -903,8 +1043,8 @@ class Frontend:
             eye_offset_x = max(6, scaled_head_radius // 3)
             eye_offset_y = -max(4, int(6 * t.scale))
             eye_r = max(1, int(3 * t.scale))
-            pygame.draw.circle(surface, EYE_COLOR, (sx - eye_offset_x, sy + eye_offset_y), eye_r)
-            pygame.draw.circle(surface, EYE_COLOR, (sx + eye_offset_x, sy + eye_offset_y), eye_r)
+            pygame.draw.circle(surface, (40, 40, 40), (sx - eye_offset_x, sy + eye_offset_y), eye_r)
+            pygame.draw.circle(surface, (40, 40, 40), (sx + eye_offset_x, sy + eye_offset_y), eye_r)
             nose = [(sx, sy - 2), (sx - 4, sy + 4), (sx + 4, sy + 4)]
             pygame.draw.polygon(surface, (200, 160, 120), nose)
             mouth_rect = pygame.Rect(sx - int(8 * t.scale), sy + int(8 * t.scale), int(16 * t.scale), max(6, int(8 * t.scale)))
@@ -967,7 +1107,7 @@ class Frontend:
         bar_y = torso_y + torso_h + thigh_h + shin_h + max(4, int(6 * t.scale))
         pygame.draw.rect(surface, (60, 60, 60), (bar_x, bar_y, bar_w, bar_h), border_radius=6)
         if t.alive:
-            fill = int((t.body.hits_remaining / CONE_MAX_HITS) * bar_w)
+            fill = int((t.body.hits_remaining / float(t.body.max_hits)) * bar_w)
             pygame.draw.rect(surface, (200, 70, 70), (bar_x, bar_y, fill, bar_h), border_radius=6)
         else:
             pygame.draw.rect(surface, (80, 80, 80), (bar_x, bar_y, bar_w, bar_h), border_radius=6)
@@ -986,6 +1126,14 @@ class Frontend:
             ring_color = (120, 200, 255) if t.shielded else (70, 120, 160)
             ring_radius = int(max(torso_w, torso_h) * 0.9)
             pygame.draw.circle(surface, ring_color, (cx, torso_y + torso_h // 2), ring_radius, max(2, int(3 * t.scale)))
+        if t.target_type == 'respawner' and not t.alive:
+            rt = getattr(t, "respawn_timer", None)
+            if rt is not None:
+                try:
+                    txt = font.render(f"{max(0, int(math.ceil(rt)))}", True, (200, 200, 255))
+                    surface.blit(txt, (sx + scaled_head_radius + 6, sy - scaled_head_radius))
+                except Exception:
+                    pass
 
         t._torso_rect = (torso_x, torso_y, torso_w, torso_h)
 
@@ -999,9 +1147,8 @@ class Frontend:
         pygame.draw.circle(surface, (255, 255, 255), (x, y), 3)
 
     def draw_effects(self, surface):
-        # draw hit feedback markers (no projectiles/tracers)
         for x, y, rem, col in self.hit_feedback:
-            t = rem / 0.28  # normalize by max expected duration (approx)
+            t = rem / 0.28
             t = clamp(t, 0.0, 1.0)
             radius = int(28 * t) + 4
             width = max(1, int(6 * t))
@@ -1033,27 +1180,30 @@ class Frontend:
         return gun_rect
 
 
-# --- Main wiring ---
+# --- utility ---
+def vec_angle(a, b):
+    dx = b[0] - a[0]
+    dy = b[1] - a[1]
+    return math.degrees(math.atan2(-dy, dx))
+
+
+# --- main ---
 def main():
     global screen
     backend = Backend(WINDOW_SIZE)
     frontend = Frontend(screen, backend)
 
-    # Start background music from an MP3 file in the folder (if available).
-    # Place your MP3 file next to this script and name it according to MUSIC_FILE constant.
+    # music
     try:
         if os.path.exists(MUSIC_FILE):
-            # Use pygame.mixer.music to stream the mp3
             try:
                 pygame.mixer.music.load(MUSIC_FILE)
-                pygame.mixer.music.set_volume(0.2)  # adjust as desired
+                pygame.mixer.music.set_volume(0.2)
                 pygame.mixer.music.play(loops=-1)
             except Exception as e:
-                # Loading/playing failed (format, codec, etc.). Fail quietly.
                 print(f"Warning: failed to play '{MUSIC_FILE}': {e}")
         else:
-            # File not found — silent fallback (no music)
-            print(f"Hint: background music file '{MUSIC_FILE}' not found in folder. No background music will play.")
+            print(f"Hint: background music file '{MUSIC_FILE}' not found.")
     except Exception:
         pass
 
@@ -1074,25 +1224,28 @@ def main():
                     running = False
                     break
                 elif event.key == pygame.K_r:
-                    # restart game
-                    frontend.points = 0
-                    frontend.hits = 0
-                    frontend.shots = 0
-                    frontend.start_time = pygame.time.get_ticks()
-                    frontend.game_state = 'playing'
-                    backend.targets = []
-                    backend.total_spawned = 0
-                    backend.move_acc = 0.0
-                    backend.spawn_acc = 0.0
-                    backend.reached = False
-                    backend.heal_acc = 0.0
-                    frontend.hit_feedback = []
+                    # restart
+                    frontend = Frontend(screen, backend=Backend(WINDOW_SIZE))
+                    backend = frontend.backend
                 elif event.key == pygame.K_e:
                     frontend.reload_current()
                 elif event.key == pygame.K_1:
                     frontend.switch_weapon(0)
                 elif event.key == pygame.K_2:
                     frontend.switch_weapon(1)
+                elif event.key == pygame.K_3:
+                    if frontend.gatling_unlocked:
+                        frontend.switch_weapon(frontend.gatling_index)
+                elif event.key == pygame.K_l:
+                    if frontend.special_choice_available and (not frontend.special_choice_used):
+                        frontend.restore_all_weapons_to_initial()
+                        frontend.special_choice_used = True
+                        frontend.special_choice_available = False
+                elif event.key == pygame.K_s:
+                    if frontend.special_choice_available and (not frontend.special_choice_used):
+                        frontend.slow_spawn_choice()
+                        frontend.special_choice_used = True
+                        frontend.special_choice_available = False
             elif event.type == pygame.MOUSEMOTION:
                 frontend.crosshair_pos = event.pos
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
@@ -1116,12 +1269,10 @@ def main():
         pygame.display.flip()
         clock.tick(120)
 
-    # Stop music on quit
     try:
         pygame.mixer.music.stop()
     except Exception:
         pass
-
     pygame.quit()
     sys.exit()
 
